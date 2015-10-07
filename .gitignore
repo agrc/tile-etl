@@ -1,0 +1,6 @@
+/packages
+*/bin
+*/obj
+/test_cache
+*.suo
+*.p12
