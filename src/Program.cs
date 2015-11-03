@@ -22,7 +22,7 @@ namespace tile_etl
             "344455572219-vhfqhg6iljbulqqnc5prh2ltmifrume4@developer.gserviceaccount.com";
 
         private const int StartLevel = 5;
-        private const int EndLevel = 11;
+        private const int EndLevel = 19;
         private const double ExtentMinX = -14078565;
         private const double ExtentMinY = 3604577;
         private const double ExtentMaxX = -11137983;
@@ -37,7 +37,7 @@ namespace tile_etl
         {
             try
             {
-                new Program().Run().Wait();
+                new Program().Run();
             }
             catch (AggregateException ex)
             {
@@ -50,7 +50,7 @@ namespace tile_etl
             Console.ReadKey();
         }
 
-        public async Task Run()
+        public void Run()
         {
             var certificate = new X509Certificate2(CertificateFile, "notasecret", X509KeyStorageFlags.Exportable);
 
@@ -68,7 +68,7 @@ namespace tile_etl
                 ApplicationName = "Tile-ETL"
             });
 
-            for (var level = StartLevel; level <= EndLevel; ++level)
+            Parallel.For(StartLevel, EndLevel, level =>
             {
                 Console.WriteLine("processing {0}", level);
                 var tileSize = WebMercatorDelta*Math.Pow(2, 1 - level);
@@ -90,42 +90,48 @@ namespace tile_etl
 
                 var acl = new ArraySegment<ObjectAccessControl>(aclList);
 
-                for (var r = startRow; r <= endRow; ++r)
+                var level2 = level;
+                Parallel.For(startRow, endRow, r =>
                 {
-                    for (var c = startColumn; c <= endColumn; ++c)
+                    var level1 = level2;
+                    var r1 = r;
+
+                    Parallel.For(startColumn, endColumn, c =>
                     {
                         try
                         {
-                            var imagePath = string.Format("{0}\\L{1:00}\\R{2:x8}\\C{3:x8}.{4}", TileDirectory, level,
-                                r, c, "jpg");
+                            var imagePath = string.Format("{0}\\L{1:00}\\R{2:x8}\\C{3:x8}.{4}", TileDirectory,
+                                level1,
+                                r1, c, "jpg");
 
                             if (!File.Exists(imagePath))
                             {
-                               
-                                continue;
+                                return;
                             }
+
                             var file = File.ReadAllBytes(imagePath);
 
                             using (var streamOut = new MemoryStream(file))
                             {
                                 var fileobj = new Object
                                 {
-                                    Name = string.Format("{0}/{1}/{2}/{3}", MapName, level, r, c),
+                                    Name = string.Format("{0}/{1}/{2}/{3}", MapName, level1, c, r1)
+                                    ,
                                     Acl = acl
                                 };
 
-                                await service.Objects.Insert(fileobj, BucketName, streamOut, "image/jpg").UploadAsync();
+                                service.Objects.Insert(fileobj, BucketName, streamOut, "image/jpg").Upload();
                             }
                         }
                         catch (Exception ex)
                         {
                             Console.WriteLine(ex.Message);
                         }
-                    }
-                }
+                    });
+                });
 
-                Console.WriteLine("Finished");
-            }
+                Console.WriteLine("finished processing {0}", level);
+            });
         }
     }
 }
