@@ -17,12 +17,9 @@ namespace tile_etl
         private const string MapName = "Lite";
 
         private const string CertificateFile = @"C:\certificates\Utah Imagery-ab8dd8c09894.p12";
-
         private const string ServiceAccountEmail =
             "344455572219-vhfqhg6iljbulqqnc5prh2ltmifrume4@developer.gserviceaccount.com";
 
-        private const int StartLevel = 13;
-        private const int EndLevel = 19;
         private const double ExtentMinX = -14078565;
         private const double ExtentMinY = 3604577;
         private const double ExtentMaxX = -11137983;
@@ -92,65 +89,62 @@ namespace tile_etl
                 var startColumn = Convert.ToInt32(Math.Truncate((ExtentMinX + WebMercatorDelta)/tileSize));
                 var endColumn = Convert.ToInt32(Math.Truncate((ExtentMaxX + WebMercatorDelta)/tileSize)) + 1;
 
-                var stopWatch = Stopwatch.StartNew();
                 var numberOfFiles = 0;
 
-                var service = new StorageService(new BaseClientService.Initializer
+                using (var service = new StorageService(new BaseClientService.Initializer
                 {
                     HttpClientInitializer = credential,
                     ApplicationName = "Tile-ETL"
-                });
-
-                for (var c = startColumn; c <= endColumn; ++c)
+                }))
                 {
-                    Debug.WriteLine("Processing column {0:x8}", c);
-
-                    try
+                    for (var c = startColumn; c <= endColumn; ++c)
                     {
-                        var imagePath = string.Format("{0}\\L{1:00}\\R{2:x8}\\C{3:x8}.{4}", TileDirectory,
-                            level,
-                            r, c, "jpg");
+                        Debug.WriteLine("Processing column {0:x8}", c);
 
-                        if (File.Exists(imagePath))
+                        try
                         {
-                            Debug.WriteLine("{0}/{1}/{2}/{3}", MapName, level, c, r);
-                            Debug.WriteLine("{0}/{1}/{2:x8}/{3:x8}", MapName, level, c, r);
+                            var imagePath = string.Format("{0}\\L{1:00}\\R{2:x8}\\C{3:x8}.{4}", TileDirectory,
+                                level,
+                                r, c, "jpg");
 
-                            var file = File.ReadAllBytes(imagePath);
-
-                            using (var streamOut = new MemoryStream(file))
+                            if (File.Exists(imagePath))
                             {
-                                var fileobj = new Object
-                                {
-                                    Name = string.Format("{0}/{1}/{2}/{3}", MapName, level, c, r),
-                                    Acl = acl
-                                };
+                                Debug.WriteLine("{0}/{1}/{2}/{3}", MapName, level, c, r);
+                                Debug.WriteLine("{0}/{1}/{2:x8}/{3:x8}", MapName, level, c, r);
 
-                                service.Objects.Insert(fileobj, BucketName, streamOut, "image/jpg").Upload();
-                                numberOfFiles += 1;
+                                var file = File.ReadAllBytes(imagePath);
+
+                                using (var streamOut = new MemoryStream(file))
+                                {
+                                    var fileobj = new Object
+                                    {
+                                        Name = string.Format("{0}/{1}/{2}/{3}", MapName, level, c, r),
+                                        Acl = acl
+                                    };
+
+                                    service.Objects.Insert(fileobj, BucketName, streamOut, "image/jpg").Upload();
+                                    numberOfFiles += 1;
+                                }
                             }
                         }
-                    }
-                    catch (AggregateException ex)
-                    {
-                        foreach (var err in ex.InnerExceptions)
+                        catch (AggregateException ex)
                         {
-                            Console.WriteLine("ERROR: " + err.Message);
+                            foreach (var err in ex.InnerExceptions)
+                            {
+                                Console.WriteLine("ERROR: " + err.Message);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine(ex.Message);
                         }
                     }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine(ex.Message);
-                    }
-                }
 
-                stopWatch.Stop();
-                if (numberOfFiles > 0)
-                {
-                    Console.WriteLine("Finished row {0} for level {1} in {2}ms number of files {3}", r, level,
-                        stopWatch.ElapsedMilliseconds, numberOfFiles);
-                    Debug.WriteLine("Finished row {0} for level {1} in {2}ms number of files {3}", r, level,
-                        stopWatch.ElapsedMilliseconds, numberOfFiles);
+                    if (numberOfFiles > 0)
+                    {
+                        Console.WriteLine("Finished row {0} for level {1} number of files {2}", r, level,
+                             numberOfFiles);
+                    }
                 }
             });
 
