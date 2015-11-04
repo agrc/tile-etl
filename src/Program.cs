@@ -31,11 +31,18 @@ namespace tile_etl
         private const string TileDirectory = @"C:\arcgisserver\directories\arcgiscache\Lite_WGS\Layers\_alllayers";
 
         [STAThread]
-        private static void Main()
+        private static void Main(string[] args)
         {
+            var level = args.Length < 1 ? -1 : int.Parse(args[0]);
+            
+            if(level < 0)
+            {
+                level = int.Parse(Console.ReadLine());
+            }
+
             try
             {
-                new Program().Run();
+                new Program().Run(level);
             }
             catch (AggregateException ex)
             {
@@ -46,7 +53,7 @@ namespace tile_etl
             }
         }
 
-        public void Run()
+        public void Run(int level)
         {
             var certificate = new X509Certificate2(CertificateFile, "notasecret", X509KeyStorageFlags.Exportable);
 
@@ -69,87 +76,86 @@ namespace tile_etl
 
             var acl = new ArraySegment<ObjectAccessControl>(aclList);
 
-            Parallel.For(StartLevel, EndLevel+1, level =>
+            Console.WriteLine("processing level {0}", level);
+            Debug.WriteLine("processing level {0}", level);
+            var tileSize = WebMercatorDelta*Math.Pow(2, 1 - level);
+
+            var startRow = Convert.ToInt32(Math.Truncate((WebMercatorDelta - ExtentMaxY)/tileSize));
+            var endRow = Convert.ToInt32(Math.Truncate((WebMercatorDelta - ExtentMinY)/tileSize)) + 1;
+
+            Parallel.For(startRow, endRow, new ParallelOptions()
             {
-                Console.WriteLine("processing level {0}", level);
-                Debug.WriteLine("processing level {0}", level);
-                var tileSize = WebMercatorDelta*Math.Pow(2, 1 - level);
+                MaxDegreeOfParallelism = 75
+            }, r =>
+            {
+                Debug.WriteLine("Processing row {0:x8}", r);
+                var startColumn = Convert.ToInt32(Math.Truncate((ExtentMinX + WebMercatorDelta)/tileSize));
+                var endColumn = Convert.ToInt32(Math.Truncate((ExtentMaxX + WebMercatorDelta)/tileSize)) + 1;
 
-                var startRow = Convert.ToInt32(Math.Truncate((WebMercatorDelta - ExtentMaxY)/tileSize));
-                var endRow = Convert.ToInt32(Math.Truncate((WebMercatorDelta - ExtentMinY)/tileSize)) + 1;
-                var localLevel = level;
+                var stopWatch = Stopwatch.StartNew();
+                var numberOfFiles = 0;
 
-                Parallel.For(startRow, endRow, r =>
+                var service = new StorageService(new BaseClientService.Initializer
                 {
-                    Debug.WriteLine("Processing row {0:x8}", r);
-                    var startColumn = Convert.ToInt32(Math.Truncate((ExtentMinX + WebMercatorDelta)/tileSize));
-                    var endColumn = Convert.ToInt32(Math.Truncate((ExtentMaxX + WebMercatorDelta)/tileSize)) + 1;
-
-                    var stopWatch = Stopwatch.StartNew();
-                    var numberOfFiles = 0;
-                    
-                    var service = new StorageService(new BaseClientService.Initializer
-                    {
-                         HttpClientInitializer = credential,
-                         ApplicationName = "Tile-ETL"
-                    });
-
-                    for (var c = startColumn; c <= endColumn; ++c)
-                    {
-                        Debug.WriteLine("Processing column {0:x8}", c);
-
-                        try
-                        {
-                            var imagePath = string.Format("{0}\\L{1:00}\\R{2:x8}\\C{3:x8}.{4}", TileDirectory,
-                                localLevel,
-                                r, c, "jpg");
-
-                            if (File.Exists(imagePath))
-                            {
-                                Debug.WriteLine("{0}/{1}/{2}/{3}", MapName, localLevel, c, r);
-                                Debug.WriteLine("{0}/{1}/{2:x8}/{3:x8}", MapName, localLevel, c, r);
-
-                                var file = File.ReadAllBytes(imagePath);
-
-                                using (var streamOut = new MemoryStream(file))
-                                {
-                                    var fileobj = new Object
-                                    {
-                                        Name = string.Format("{0}/{1}/{2}/{3}", MapName, localLevel, c, r),
-                                        Acl = acl
-                                    };
-
-                                    service.Objects.Insert(fileobj, BucketName, streamOut, "image/jpg").Upload();
-                                    numberOfFiles += 1;
-                                }
-                            }
-                        }
-                        catch (AggregateException ex)
-                        {
-                            foreach (var err in ex.InnerExceptions)
-                            {
-                                Console.WriteLine("ERROR: " + err.Message);
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine(ex.Message);
-                        }
-                    }
-
-                    stopWatch.Stop();
-                    if (numberOfFiles > 0)
-                    {
-                        Console.WriteLine("Finished row {0} for level {1} in {2}ms number of files {3}", r, level,
-                            stopWatch.ElapsedMilliseconds, numberOfFiles);
-                        Debug.WriteLine("Finished row {0} for level {1} in {2}ms number of files {3}", r, level,
-                            stopWatch.ElapsedMilliseconds, numberOfFiles);
-                    }
+                    HttpClientInitializer = credential,
+                    ApplicationName = "Tile-ETL"
                 });
 
-                Console.WriteLine("finished processing {0}", level);
-                Debug.WriteLine("finished processing {0}", level);
+                for (var c = startColumn; c <= endColumn; ++c)
+                {
+                    Debug.WriteLine("Processing column {0:x8}", c);
+
+                    try
+                    {
+                        var imagePath = string.Format("{0}\\L{1:00}\\R{2:x8}\\C{3:x8}.{4}", TileDirectory,
+                            level,
+                            r, c, "jpg");
+
+                        if (File.Exists(imagePath))
+                        {
+                            Debug.WriteLine("{0}/{1}/{2}/{3}", MapName, level, c, r);
+                            Debug.WriteLine("{0}/{1}/{2:x8}/{3:x8}", MapName, level, c, r);
+
+                            var file = File.ReadAllBytes(imagePath);
+
+                            using (var streamOut = new MemoryStream(file))
+                            {
+                                var fileobj = new Object
+                                {
+                                    Name = string.Format("{0}/{1}/{2}/{3}", MapName, level, c, r),
+                                    Acl = acl
+                                };
+
+                                service.Objects.Insert(fileobj, BucketName, streamOut, "image/jpg").Upload();
+                                numberOfFiles += 1;
+                            }
+                        }
+                    }
+                    catch (AggregateException ex)
+                    {
+                        foreach (var err in ex.InnerExceptions)
+                        {
+                            Console.WriteLine("ERROR: " + err.Message);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine(ex.Message);
+                    }
+                }
+
+                stopWatch.Stop();
+                if (numberOfFiles > 0)
+                {
+                    Console.WriteLine("Finished row {0} for level {1} in {2}ms number of files {3}", r, level,
+                        stopWatch.ElapsedMilliseconds, numberOfFiles);
+                    Debug.WriteLine("Finished row {0} for level {1} in {2}ms number of files {3}", r, level,
+                        stopWatch.ElapsedMilliseconds, numberOfFiles);
+                }
             });
+
+            Console.WriteLine("finished processing {0}", level);
+            Debug.WriteLine("finished processing {0}", level);
         }
     }
 }
