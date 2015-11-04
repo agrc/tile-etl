@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading.Tasks;
@@ -15,20 +16,17 @@ namespace tile_etl
         private const string BucketName = "state-of-utah-lite-tiles";
         private const string MapName = "Lite";
 
-        private const string CertificateFile =
-            @"C:\arcgisserver\directories\arcgiscache\Lite_WGS\Utah Imagery-ab8dd8c09894.p12";
+        private const string CertificateFile = @"C:\certificates\Utah Imagery-ab8dd8c09894.p12";
 
         private const string ServiceAccountEmail =
             "344455572219-vhfqhg6iljbulqqnc5prh2ltmifrume4@developer.gserviceaccount.com";
 
-        private const int StartLevel = 5;
+        private const int StartLevel = 13;
         private const int EndLevel = 19;
         private const double ExtentMinX = -14078565;
         private const double ExtentMinY = 3604577;
         private const double ExtentMaxX = -11137983;
         private const double ExtentMaxY = 6384021;
-        private const int TilePaddingX = 6;
-        private const int TilePaddingY = 6;
         private const double WebMercatorDelta = 20037508.34278;
         private const string TileDirectory = @"C:\arcgisserver\directories\arcgiscache\Lite_WGS\Layers\_alllayers";
 
@@ -46,8 +44,6 @@ namespace tile_etl
                     Console.WriteLine("ERROR: " + err.Message);
                 }
             }
-
-            Console.ReadKey();
         }
 
         public void Run()
@@ -62,75 +58,97 @@ namespace tile_etl
                 }
             }.FromCertificate(certificate));
 
-            var service = new StorageService(new BaseClientService.Initializer
+            var aclList = new[]
             {
-                HttpClientInitializer = credential,
-                ApplicationName = "Tile-ETL"
-            });
+                new ObjectAccessControl
+                {
+                    Entity = "allUsers",
+                    Role = "OWNER"
+                }
+            };
 
-            Parallel.For(StartLevel, EndLevel, level =>
+            var acl = new ArraySegment<ObjectAccessControl>(aclList);
+
+            Parallel.For(StartLevel, EndLevel+1, level =>
             {
-                Console.WriteLine("processing {0}", level);
+                Console.WriteLine("processing level {0}", level);
+                Debug.WriteLine("processing level {0}", level);
                 var tileSize = WebMercatorDelta*Math.Pow(2, 1 - level);
 
-                var startRow = Convert.ToInt32(Math.Truncate((WebMercatorDelta - ExtentMaxY)/tileSize)) - TilePaddingY;
-                var endRow = Convert.ToInt32(Math.Truncate((WebMercatorDelta - ExtentMinY)/tileSize)) + 1 + TilePaddingY;
-                var startColumn = Convert.ToInt32(Math.Truncate((ExtentMinX + WebMercatorDelta)/tileSize)) -
-                                  TilePaddingX;
-                var endColumn = Convert.ToInt32(Math.Truncate((ExtentMaxX + WebMercatorDelta)/tileSize)) + 1 +
-                                TilePaddingX;
-                var aclList = new[]
-                {
-                    new ObjectAccessControl
-                    {
-                        Entity = "allUsers",
-                        Role = "OWNER"
-                    }
-                };
+                var startRow = Convert.ToInt32(Math.Truncate((WebMercatorDelta - ExtentMaxY)/tileSize));
+                var endRow = Convert.ToInt32(Math.Truncate((WebMercatorDelta - ExtentMinY)/tileSize)) + 1;
+                var localLevel = level;
 
-                var acl = new ArraySegment<ObjectAccessControl>(aclList);
-
-                var level2 = level;
                 Parallel.For(startRow, endRow, r =>
                 {
-                    var level1 = level2;
-                    var r1 = r;
+                    Debug.WriteLine("Processing row {0:x8}", r);
+                    var startColumn = Convert.ToInt32(Math.Truncate((ExtentMinX + WebMercatorDelta)/tileSize));
+                    var endColumn = Convert.ToInt32(Math.Truncate((ExtentMaxX + WebMercatorDelta)/tileSize)) + 1;
 
-                    Parallel.For(startColumn, endColumn, c =>
+                    var stopWatch = Stopwatch.StartNew();
+                    var numberOfFiles = 0;
+                    
+                    var service = new StorageService(new BaseClientService.Initializer
                     {
+                         HttpClientInitializer = credential,
+                         ApplicationName = "Tile-ETL"
+                    });
+
+                    for (var c = startColumn; c <= endColumn; ++c)
+                    {
+                        Debug.WriteLine("Processing column {0:x8}", c);
+
                         try
                         {
                             var imagePath = string.Format("{0}\\L{1:00}\\R{2:x8}\\C{3:x8}.{4}", TileDirectory,
-                                level1,
-                                r1, c, "jpg");
+                                localLevel,
+                                r, c, "jpg");
 
-                            if (!File.Exists(imagePath))
+                            if (File.Exists(imagePath))
                             {
-                                return;
-                            }
+                                Debug.WriteLine("{0}/{1}/{2}/{3}", MapName, localLevel, c, r);
+                                Debug.WriteLine("{0}/{1}/{2:x8}/{3:x8}", MapName, localLevel, c, r);
 
-                            var file = File.ReadAllBytes(imagePath);
+                                var file = File.ReadAllBytes(imagePath);
 
-                            using (var streamOut = new MemoryStream(file))
-                            {
-                                var fileobj = new Object
+                                using (var streamOut = new MemoryStream(file))
                                 {
-                                    Name = string.Format("{0}/{1}/{2}/{3}", MapName, level1, c, r1)
-                                    ,
-                                    Acl = acl
-                                };
+                                    var fileobj = new Object
+                                    {
+                                        Name = string.Format("{0}/{1}/{2}/{3}", MapName, localLevel, c, r),
+                                        Acl = acl
+                                    };
 
-                                service.Objects.Insert(fileobj, BucketName, streamOut, "image/jpg").Upload();
+                                    service.Objects.Insert(fileobj, BucketName, streamOut, "image/jpg").Upload();
+                                    numberOfFiles += 1;
+                                }
+                            }
+                        }
+                        catch (AggregateException ex)
+                        {
+                            foreach (var err in ex.InnerExceptions)
+                            {
+                                Console.WriteLine("ERROR: " + err.Message);
                             }
                         }
                         catch (Exception ex)
                         {
                             Console.WriteLine(ex.Message);
                         }
-                    });
+                    }
+
+                    stopWatch.Stop();
+                    if (numberOfFiles > 0)
+                    {
+                        Console.WriteLine("Finished row {0} for level {1} in {2}ms number of files {3}", r, level,
+                            stopWatch.ElapsedMilliseconds, numberOfFiles);
+                        Debug.WriteLine("Finished row {0} for level {1} in {2}ms number of files {3}", r, level,
+                            stopWatch.ElapsedMilliseconds, numberOfFiles);
+                    }
                 });
 
                 Console.WriteLine("finished processing {0}", level);
+                Debug.WriteLine("finished processing {0}", level);
             });
         }
     }
