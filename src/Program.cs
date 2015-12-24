@@ -13,8 +13,8 @@ namespace tile_etl
 {
     internal class Program
     {
-        private const string BucketName = "state-of-utah-lite-tiles";
-        private const string MapName = "Lite";
+        private const string BucketName = "state-of-utah-pyramid-tiles-terrain";
+        private const string MapName = "Terrain";
 
         private const string CertificateFile = @"C:\certificates\Utah Imagery-ab8dd8c09894.p12";
         private const string ServiceAccountEmail =
@@ -25,7 +25,7 @@ namespace tile_etl
         private const double ExtentMaxX = -11137983;
         private const double ExtentMaxY = 6384021;
         private const double WebMercatorDelta = 20037508.34278;
-        private const string TileDirectory = @"C:\arcgisserver\directories\arcgiscache\Lite_WGS\Layers\_alllayers";
+        private const string TileDirectory = @"C:\arcgisserver\directories\arcgiscache\BaseMaps_WGS_Terrain\Layers\_alllayers";
 
         [STAThread]
         private static void Main(string[] args)
@@ -105,7 +105,7 @@ namespace tile_etl
                         {
                             var imagePath = string.Format("{0}\\L{1:00}\\R{2:x8}\\C{3:x8}.{4}", TileDirectory,
                                 level,
-                                r, c, "jpg");
+                                r, c, "png");
 
                             if (File.Exists(imagePath))
                             {
@@ -122,7 +122,7 @@ namespace tile_etl
                                         Acl = acl
                                     };
 
-                                    service.Objects.Insert(fileobj, BucketName, streamOut, "image/jpg").Upload();
+                                    service.Objects.Insert(fileobj, BucketName, streamOut, "image/png").Upload();
                                     numberOfFiles += 1;
                                 }
                             }
