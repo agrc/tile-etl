@@ -137,8 +137,8 @@ namespace tile_etl
 
                     if (numberOfFiles > 0)
                     {
-                        Console.WriteLine("Finished row {0} for level {1} number of files {2}", r, level,
-                             numberOfFiles);
+                        Console.WriteLine("{3}: Finished row {0} for level {1} number of files {2}", r, level,
+                             numberOfFiles, mapName);
                     }
                 }
             });
