@@ -74,17 +74,11 @@ namespace tile_etl
 
         public static void Run(DirectoryInfo folder, ServiceAccountCredential credential, ArraySegment<ObjectAccessControl> acl )
         {
-            Console.WriteLine("processing level {0}", folder.Name);
-            Debug.WriteLine("processing level {0}", folder.Name);
-
             var level = int.Parse(folder.Name.Remove(0, 1));
-            Parallel.ForEach(folder.GetDirectories(), new ParallelOptions
-            {
-                MaxDegreeOfParallelism = 75
-            }, rowDirectory =>
+            Parallel.ForEach(folder.GetDirectories(), rowDirectory =>
             {
                 var row = int.Parse(rowDirectory.Name.Remove(0, 1), NumberStyles.HexNumber);
-                Console.WriteLine("processing row {0}", rowDirectory.Name);
+                Console.WriteLine("processing row {0} {1}", level, rowDirectory.Name);
                 Debug.WriteLine("Processing row {0}", rowDirectory.Name);
                 using (var service = new StorageService(new BaseClientService.Initializer
                 {
