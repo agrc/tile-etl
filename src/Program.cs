@@ -1,4 +1,7 @@
 ﻿using System;
+using System.Configuration;
+using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading.Tasks;
@@ -12,46 +15,26 @@ namespace tile_etl
 {
     internal class Program
     {
-        private const string BucketName = "state-of-utah-lite-tiles";
-        private const string MapName = "Lite";
-
-        private const string CertificateFile =
-            @"C:\arcgisserver\directories\arcgiscache\Lite_WGS\Utah Imagery-ab8dd8c09894.p12";
-
+        private const string CertificateFile = @"C:\certificates\Utah Imagery-ab8dd8c09894.p12";
         private const string ServiceAccountEmail =
             "344455572219-vhfqhg6iljbulqqnc5prh2ltmifrume4@developer.gserviceaccount.com";
 
-        private const int StartLevel = 5;
-        private const int EndLevel = 11;
-        private const double ExtentMinX = -14078565;
-        private const double ExtentMinY = 3604577;
-        private const double ExtentMaxX = -11137983;
-        private const double ExtentMaxY = 6384021;
-        private const int TilePaddingX = 6;
-        private const int TilePaddingY = 6;
-        private const double WebMercatorDelta = 20037508.34278;
-        private const string TileDirectory = @"C:\arcgisserver\directories\arcgiscache\Lite_WGS\Layers\_alllayers";
+        private static string _tileDirectory;
+        private static string _mapName;
 
         [STAThread]
-        private static void Main()
+        private static void Main(string[] args)
         {
-            try
+            _mapName = args.Length < 1 ? null : args[0];
+            
+            if (_mapName == null)
             {
-                new Program().Run().Wait();
-            }
-            catch (AggregateException ex)
-            {
-                foreach (var err in ex.InnerExceptions)
-                {
-                    Console.WriteLine("ERROR: " + err.Message);
-                }
+                Console.Write("Map Name (e.g. 'BaseMaps_WGS_Topo'): ");
+                _mapName = Console.ReadLine();
             }
 
-            Console.ReadKey();
-        }
+            _tileDirectory = string.Format(@"C:\arcgisserver\directories\arcgiscache\{0}\Layers\_alllayers", _mapName);
 
-        public async Task Run()
-        {
             var certificate = new X509Certificate2(CertificateFile, "notasecret", X509KeyStorageFlags.Exportable);
 
             var credential = new ServiceAccountCredential(new ServiceAccountCredential.Initializer(ServiceAccountEmail)
@@ -62,59 +45,64 @@ namespace tile_etl
                 }
             }.FromCertificate(certificate));
 
-            var service = new StorageService(new BaseClientService.Initializer
+            var aclList = new[]
             {
-                HttpClientInitializer = credential,
-                ApplicationName = "Tile-ETL"
-            });
-
-            for (var level = StartLevel; level <= EndLevel; ++level)
-            {
-                Console.WriteLine("processing {0}", level);
-                var tileSize = WebMercatorDelta*Math.Pow(2, 1 - level);
-
-                var startRow = Convert.ToInt32(Math.Truncate((WebMercatorDelta - ExtentMaxY)/tileSize)) - TilePaddingY;
-                var endRow = Convert.ToInt32(Math.Truncate((WebMercatorDelta - ExtentMinY)/tileSize)) + 1 + TilePaddingY;
-                var startColumn = Convert.ToInt32(Math.Truncate((ExtentMinX + WebMercatorDelta)/tileSize)) -
-                                  TilePaddingX;
-                var endColumn = Convert.ToInt32(Math.Truncate((ExtentMaxX + WebMercatorDelta)/tileSize)) + 1 +
-                                TilePaddingX;
-                var aclList = new[]
+                new ObjectAccessControl
                 {
-                    new ObjectAccessControl
+                    Entity = "allUsers",
+                    Role = "OWNER"
+                }
+            };
+
+            var acl = new ArraySegment<ObjectAccessControl>(aclList);
+
+            foreach (var folder in Directory.GetDirectories(_tileDirectory))
+            {
+                try
+                {
+                    Run(new DirectoryInfo(folder), credential, acl);
+                }
+                catch (AggregateException ex)
+                {
+                    foreach (var err in ex.InnerExceptions)
                     {
-                        Entity = "allUsers",
-                        Role = "OWNER"
+                        Console.WriteLine("ERROR: " + err.Message);
                     }
-                };
+                }
+            }
+        }
 
-                var acl = new ArraySegment<ObjectAccessControl>(aclList);
-
-                for (var r = startRow; r <= endRow; ++r)
+        public static void Run(DirectoryInfo folder, ServiceAccountCredential credential, ArraySegment<ObjectAccessControl> acl )
+        {
+            var level = int.Parse(folder.Name.Remove(0, 1));
+            Parallel.ForEach(folder.GetDirectories(), rowDirectory =>
+            {
+                var row = int.Parse(rowDirectory.Name.Remove(0, 1), NumberStyles.HexNumber);
+                Console.WriteLine("processing row {0} {1}", level, rowDirectory.Name);
+                Debug.WriteLine("Processing row {0}", rowDirectory.Name);
+                using (var service = new StorageService(new BaseClientService.Initializer
                 {
-                    for (var c = startColumn; c <= endColumn; ++c)
+                    HttpClientInitializer = credential,
+                    ApplicationName = "Tile-ETL"
+                }))
+                {
+                    foreach(var column in rowDirectory.GetFiles())
                     {
                         try
                         {
-                            var imagePath = string.Format("{0}\\L{1:00}\\R{2:x8}\\C{3:x8}.{4}", TileDirectory, level,
-                                r, c, "jpg");
-
-                            if (!File.Exists(imagePath))
+                            UploadFile(column.FullName,
+                                       level,
+                                       int.Parse(column.Name.Substring(1, column.Name.Length - 5), NumberStyles.HexNumber),
+                                       row,
+                                       acl,
+                                       service,
+                                       column.Name.Substring(column.Name.IndexOf(".") + 1, 3));
+                        }
+                        catch (AggregateException ex)
+                        {
+                            foreach (var err in ex.InnerExceptions)
                             {
-                               
-                                continue;
-                            }
-                            var file = File.ReadAllBytes(imagePath);
-
-                            using (var streamOut = new MemoryStream(file))
-                            {
-                                var fileobj = new Object
-                                {
-                                    Name = string.Format("{0}/{1}/{2}/{3}", MapName, level, r, c),
-                                    Acl = acl
-                                };
-
-                                await service.Objects.Insert(fileobj, BucketName, streamOut, "image/jpg").UploadAsync();
+                                Console.WriteLine("ERROR: " + err.Message);
                             }
                         }
                         catch (Exception ex)
@@ -123,8 +111,29 @@ namespace tile_etl
                         }
                     }
                 }
+            });
 
-                Console.WriteLine("Finished");
+            Console.WriteLine("finished processing {0}", folder.Name);
+        }
+
+        private static void UploadFile(string imagePath, int level, int column, int row, ArraySegment<ObjectAccessControl> acl, StorageService service, string imageType)
+        {
+            Debug.WriteLine("uploading " + imagePath);
+
+            var file = File.ReadAllBytes(imagePath);
+            var configs = ConfigurationManager.AppSettings[_mapName].Split(';');
+            var bucket = configs[0];
+            var folder = configs[1];
+
+            using (var streamOut = new MemoryStream(file))
+            {
+                var fileobj = new Object
+                {
+                    Name = string.Format("{0}/{1}/{2}/{3}", folder, level, column, row),
+                    Acl = acl
+                };
+
+                service.Objects.Insert(fileobj, bucket, streamOut, "image/" + imageType).Upload();
             }
         }
     }
