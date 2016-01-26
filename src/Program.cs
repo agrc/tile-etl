@@ -1,5 +1,7 @@
 ﻿using System;
+using System.Configuration;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading.Tasks;
@@ -8,7 +10,6 @@ using Google.Apis.Services;
 using Google.Apis.Storage.v1;
 using Google.Apis.Storage.v1.Data;
 using Object = Google.Apis.Storage.v1.Data.Object;
-using System.Configuration;
 
 namespace tile_etl
 {
@@ -18,46 +19,22 @@ namespace tile_etl
         private const string ServiceAccountEmail =
             "344455572219-vhfqhg6iljbulqqnc5prh2ltmifrume4@developer.gserviceaccount.com";
 
-        private const double ExtentMinX = -14078565;
-        private const double ExtentMinY = 3604577;
-        private const double ExtentMaxX = -11137983;
-        private const double ExtentMaxY = 6384021;
-        private const double WebMercatorDelta = 20037508.34278;
-        private static string tileDirectory;
-        private static string mapName;
+        private static string _tileDirectory;
+        private static string _mapName;
 
         [STAThread]
         private static void Main(string[] args)
         {
-            mapName = args.Length < 1 ? null : args[0];
+            _mapName = args.Length < 1 ? null : args[0];
             
-            if (mapName == null)
+            if (_mapName == null)
             {
                 Console.Write("Map Name (e.g. 'BaseMaps_WGS_Topo'): ");
-                mapName = Console.ReadLine();
+                _mapName = Console.ReadLine();
             }
 
-            tileDirectory = string.Format(@"C:\arcgisserver\directories\arcgiscache\{0}\Layers\_alllayers", mapName);
+            _tileDirectory = string.Format(@"C:\arcgisserver\directories\arcgiscache\{0}\Layers\_alllayers", _mapName);
 
-            foreach (string folder in Directory.GetDirectories(tileDirectory))
-            {
-                int level = int.Parse(folder.Substring(folder.Length - 2, 2));
-                try
-                {
-                    new Program().Run(level);
-                }
-                catch (AggregateException ex)
-                {
-                    foreach (var err in ex.InnerExceptions)
-                    {
-                        Console.WriteLine("ERROR: " + err.Message);
-                    }
-                }
-            }
-        }
-
-        public void Run(int level)
-        {
             var certificate = new X509Certificate2(CertificateFile, "notasecret", X509KeyStorageFlags.Exportable);
 
             var credential = new ServiceAccountCredential(new ServiceAccountCredential.Initializer(ServiceAccountEmail)
@@ -79,48 +56,53 @@ namespace tile_etl
 
             var acl = new ArraySegment<ObjectAccessControl>(aclList);
 
-            Console.WriteLine("processing level {0}", level);
-            Debug.WriteLine("processing level {0}", level);
-            var tileSize = WebMercatorDelta*Math.Pow(2, 1 - level);
+            foreach (var folder in Directory.GetDirectories(_tileDirectory))
+            {
+                try
+                {
+                    Run(new DirectoryInfo(folder), credential, acl);
+                }
+                catch (AggregateException ex)
+                {
+                    foreach (var err in ex.InnerExceptions)
+                    {
+                        Console.WriteLine("ERROR: " + err.Message);
+                    }
+                }
+            }
+        }
 
-            var startRow = Convert.ToInt32(Math.Truncate((WebMercatorDelta - ExtentMaxY)/tileSize));
-            var endRow = Convert.ToInt32(Math.Truncate((WebMercatorDelta - ExtentMinY)/tileSize)) + 1;
+        public static void Run(DirectoryInfo folder, ServiceAccountCredential credential, ArraySegment<ObjectAccessControl> acl )
+        {
+            Console.WriteLine("processing level {0}", folder.Name);
+            Debug.WriteLine("processing level {0}", folder.Name);
 
-            Parallel.For(startRow, endRow, new ParallelOptions()
+            var level = int.Parse(folder.Name.Remove(0, 1));
+            Parallel.ForEach(folder.GetDirectories(), new ParallelOptions
             {
                 MaxDegreeOfParallelism = 75
-            }, r =>
+            }, rowDirectory =>
             {
-                Debug.WriteLine("Processing row {0:x8}", r);
-                var startColumn = Convert.ToInt32(Math.Truncate((ExtentMinX + WebMercatorDelta)/tileSize));
-                var endColumn = Convert.ToInt32(Math.Truncate((ExtentMaxX + WebMercatorDelta)/tileSize)) + 1;
-
-                var numberOfFiles = 0;
-
+                var row = int.Parse(rowDirectory.Name.Remove(0, 1), NumberStyles.HexNumber);
+                Console.WriteLine("processing row {0}", rowDirectory.Name);
+                Debug.WriteLine("Processing row {0}", rowDirectory.Name);
                 using (var service = new StorageService(new BaseClientService.Initializer
                 {
                     HttpClientInitializer = credential,
                     ApplicationName = "Tile-ETL"
                 }))
                 {
-                    for (var c = startColumn; c <= endColumn; ++c)
+                    foreach(var column in rowDirectory.GetFiles())
                     {
                         try
                         {
-                            var imagePath = string.Format("{0}\\L{1:00}\\R{2:x8}\\C{3:x8}.{4}", tileDirectory,
-                                level,
-                                r, c, "jpg");
-
-                            if (File.Exists(imagePath))
-                            {
-                                uploadFile(imagePath, level, c, r, acl, service, "jpg");
-                                numberOfFiles += 1;
-                            }
-                            else if (File.Exists(imagePath.Replace("jpg", "png")))
-                            {
-                                uploadFile(imagePath.Replace("jpg", "png"), level, c, r, acl, service, "png");
-                                numberOfFiles += 1;
-                            }
+                            UploadFile(column.FullName,
+                                       level,
+                                       int.Parse(column.Name.Substring(1, column.Name.Length - 5), NumberStyles.HexNumber),
+                                       row,
+                                       acl,
+                                       service,
+                                       column.Name.Substring(column.Name.IndexOf(".") + 1, 3));
                         }
                         catch (AggregateException ex)
                         {
@@ -134,24 +116,18 @@ namespace tile_etl
                             Console.WriteLine(ex.Message);
                         }
                     }
-
-                    if (numberOfFiles > 0)
-                    {
-                        Console.WriteLine("{3}: Finished row {0} for level {1} number of files {2}", r, level,
-                             numberOfFiles, mapName);
-                    }
                 }
             });
 
-            Console.WriteLine("finished processing {0}", level);
+            Console.WriteLine("finished processing {0}", folder.Name);
         }
 
-        private void uploadFile(string imagePath, int level, int column, int row, ArraySegment<ObjectAccessControl> acl, StorageService service, string imageType)
+        private static void UploadFile(string imagePath, int level, int column, int row, ArraySegment<ObjectAccessControl> acl, StorageService service, string imageType)
         {
             Debug.WriteLine("uploading " + imagePath);
 
             var file = File.ReadAllBytes(imagePath);
-            var configs = ConfigurationManager.AppSettings[mapName].Split(';');
+            var configs = ConfigurationManager.AppSettings[_mapName].Split(';');
             var bucket = configs[0];
             var folder = configs[1];
 
